@@ -128,7 +128,7 @@ public class LoginActionsService {
 
     public static final String SESSION_CODE = "session_code";
     public static final String AUTH_SESSION_ID = "auth_session_id";
-    
+
     public static final String CANCEL_AIA = "cancel-aia";
 
     private RealmModel realm;
@@ -373,7 +373,8 @@ public class LoginActionsService {
                                         @QueryParam(SESSION_CODE) String code,
                                         @QueryParam(Constants.EXECUTION) String execution,
                                         @QueryParam(Constants.CLIENT_ID) String clientId,
-                                        @QueryParam(Constants.TAB_ID) String tabId) {
+                                        @QueryParam(Constants.TAB_ID) String tabId,
+                                        @QueryParam(OIDCLoginProtocol.REDIRECT_URI_PARAM) String redirectUri) {
         ClientModel client = realm.getClientByClientId(clientId);
         AuthenticationSessionModel authSession = new AuthenticationSessionManager(session).getCurrentAuthenticationSession(realm, client, tabId);
         processLocaleParam(authSession);
@@ -386,7 +387,7 @@ public class LoginActionsService {
                 return ErrorPage.error(session, null, Response.Status.BAD_REQUEST, Messages.RESET_CREDENTIAL_NOT_ALLOWED);
 
             }
-            authSession = createAuthenticationSessionForClient(clientId);
+            authSession = createAuthenticationSessionForClient(clientId, redirectUri);
             return processResetCredentials(false, null, authSession, null);
         }
 
@@ -396,16 +397,24 @@ public class LoginActionsService {
 
     AuthenticationSessionModel createAuthenticationSessionForClient(String clientID)
             throws UriBuilderException, IllegalArgumentException {
+        return this.createAuthenticationSessionForClient(clientID, null);
+    }
+
+    AuthenticationSessionModel createAuthenticationSessionForClient(String clientID, String redirectUri)
+            throws UriBuilderException, IllegalArgumentException {
         AuthenticationSessionModel authSession;
 
         ClientModel client = session.clients().getClientByClientId(realm, clientID);
-        String redirectUri;
 
         if (client == null) {
             client = SystemClientUtil.getSystemClient(realm);
             redirectUri = Urls.accountBase(session.getContext().getUri().getBaseUri()).path("/").build(realm.getName()).toString();
         } else {
-            redirectUri = RedirectUtils.getFirstValidRedirectUri(session, client.getRootUrl(), client.getRedirectUris());
+            redirectUri = RedirectUtils.verifyRedirectUri(session, redirectUri, client, true);
+            // No valid redirect url given
+            if (redirectUri == null) {
+                redirectUri = RedirectUtils.getFirstValidRedirectUri(session, client.getRootUrl(), client.getRedirectUris());
+            }
         }
 
         RootAuthenticationSessionModel rootAuthSession = new AuthenticationSessionManager(session).createAuthenticationSession(realm, true);
@@ -579,7 +588,7 @@ public class LoginActionsService {
 
             LoginActionsServiceChecks.checkIsUserValid(token, tokenContext);
             LoginActionsServiceChecks.checkIsClientValid(token, tokenContext);
-            
+
             session.getContext().setClient(authSession.getClient());
 
             TokenVerifier.createWithoutSignature(token)
@@ -1024,7 +1033,7 @@ public class LoginActionsService {
 
 
         Response response;
-        
+
         if (isCancelAppInitiatedAction(factory.getId(), authSession, context)) {
             provider.initiatedActionCanceled(session, authSession);
             AuthenticationManager.setKcActionStatus(factory.getId(), RequiredActionContext.KcActionStatus.CANCELLED, authSession);
@@ -1057,7 +1066,7 @@ public class LoginActionsService {
 
         return BrowserHistoryHelper.getInstance().saveResponseAndRedirect(session, authSession, response, true, request);
     }
-    
+
     private Response interruptionResponse(RequiredActionContextResult context, AuthenticationSessionModel authSession, String action, Error error) {
         LoginProtocol protocol = context.getSession().getProvider(LoginProtocol.class, authSession.getProtocol());
         protocol.setRealm(context.getRealm())
@@ -1066,11 +1075,11 @@ public class LoginActionsService {
                 .setEventBuilder(event);
 
         event.detail(Details.CUSTOM_REQUIRED_ACTION, action);
-        
+
         event.error(Errors.REJECTED_BY_USER);
         return protocol.sendError(authSession, error);
     }
-    
+
     private boolean isCancelAppInitiatedAction(String providerId, AuthenticationSessionModel authSession, RequiredActionContextResult context) {
         if (providerId.equals(authSession.getClientNote(Constants.KC_ACTION_EXECUTING))) {
             MultivaluedMap<String, String> formData = context.getHttpRequest().getDecodedFormParameters();
