@@ -22,7 +22,6 @@ import org.keycloak.provider.InvalidationHandler.InvalidableObjectType;
 import org.keycloak.provider.Provider;
 import org.keycloak.services.clientpolicy.ClientPolicyManager;
 import org.keycloak.sessions.AuthenticationSessionProvider;
-import org.keycloak.storage.federated.UserFederatedStorageProvider;
 import org.keycloak.vault.VaultTranscriber;
 
 import java.util.Set;
@@ -206,6 +205,8 @@ public interface KeycloakSession {
     /**
      * The user cache
      *
+     * @deprecated The access to the UserCache interface is no longer possible here, and this method is about to be removed.
+     * Adjust your code according to the Keycloak 19 Upgrading Guide.
      * @return may be null if cache is disabled
      */
     @Deprecated
@@ -271,7 +272,7 @@ public interface KeycloakSession {
     /**
      * Keycloak specific local storage for clients.  No cache in front, this api talks directly to database configured for Keycloak
      *
-     * @return
+     * @deprecated Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.
      */
     @Deprecated
     ClientProvider clientLocalStorage();
@@ -279,8 +280,7 @@ public interface KeycloakSession {
     /**
      * Keycloak specific local storage for client scopes.  No cache in front, this api talks directly to database configured for Keycloak
      *
-     * @deprecated Use {@link #clientScopes()} instead
-     * @return
+     * @deprecated Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.
      */
     @Deprecated
     ClientScopeProvider clientScopeLocalStorage();
@@ -288,7 +288,7 @@ public interface KeycloakSession {
     /**
      * Keycloak specific local storage for groups.  No cache in front, this api talks directly to storage configured for Keycloak
      *
-     * @return
+     * @deprecated Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.
      */
     @Deprecated
     GroupProvider groupLocalStorage();
@@ -296,19 +296,10 @@ public interface KeycloakSession {
     /**
      * Keycloak specific local storage for roles.  No cache in front, this api talks directly to storage configured for Keycloak
      *
-     * @return
+     * @deprecated Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.
      */
     @Deprecated
     RoleProvider roleLocalStorage();
-
-    /**
-     * Hybrid storage for UserStorageProviders that can't store a specific piece of keycloak data in their external storage.
-     * No cache in front.
-     *
-     * @return
-     */
-    @Deprecated
-    UserFederatedStorageProvider userFederatedStorage();
 
     /**
      * Key manager

@@ -48,7 +48,6 @@ import org.keycloak.services.clientpolicy.ClientPolicyManager;
 import org.keycloak.models.LegacySessionSupportProvider;
 import org.keycloak.sessions.AuthenticationSessionProvider;
 import org.keycloak.storage.DatastoreProvider;
-import org.keycloak.storage.federated.UserFederatedStorageProvider;
 import org.keycloak.vault.DefaultVaultTranscriber;
 import org.keycloak.vault.VaultProvider;
 import org.keycloak.vault.VaultTranscriber;
@@ -70,7 +69,6 @@ import java.util.stream.Collectors;
  */
 public class DefaultKeycloakSession implements KeycloakSession {
 
-    private final static Logger log = Logger.getLogger(DefaultKeycloakSession.class);
     private final DefaultKeycloakSessionFactory factory;
     private final Map<Integer, Provider> providers = new HashMap<>();
     private final List<Provider> closable = new LinkedList<>();
@@ -83,13 +81,14 @@ public class DefaultKeycloakSession implements KeycloakSession {
     private UserSessionProvider sessionProvider;
     private UserLoginFailureProvider userLoginFailureProvider;
     private AuthenticationSessionProvider authenticationSessionProvider;
-    private UserFederatedStorageProvider userFederatedStorageProvider;
     private final KeycloakContext context;
     private KeyManager keyManager;
     private ThemeManager themeManager;
     private TokenManager tokenManager;
     private VaultTranscriber vaultTranscriber;
     private ClientPolicyManager clientPolicyManager;
+
+    private boolean closed;
 
     public DefaultKeycloakSession(DefaultKeycloakSessionFactory factory) {
         this.factory = factory;
@@ -129,6 +128,11 @@ public class DefaultKeycloakSession implements KeycloakSession {
 
     @Override
     public void enlistForClose(Provider provider) {
+        for (Provider p : closable) {
+            if (p == provider) {    // Do not add the same provider twice
+                return;
+            }
+        }
         closable.add(provider);
     }
 
@@ -166,88 +170,68 @@ public class DefaultKeycloakSession implements KeycloakSession {
 
     @Override
     @Deprecated
-    public UserFederatedStorageProvider userFederatedStorage() {
-        if (userFederatedStorageProvider == null) {
-            userFederatedStorageProvider = getProvider(UserFederatedStorageProvider.class);
-        }
-        return userFederatedStorageProvider;
-    }
-
-    @Override
-    @Deprecated
     public UserProvider userLocalStorage() {
-        log.warnf("The semantics of this method have changed: Please see the migration guide on how to migrate.%s", StackUtil.getShortStackTrace());
-        return users();
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
 
     @Override
     @Deprecated
     public RealmProvider realmLocalStorage() {
-        return realms();
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
 
     @Override
     @Deprecated
     public ClientProvider clientLocalStorage() {
-        return clients();
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
 
     @Override
     @Deprecated
     public ClientScopeProvider clientScopeLocalStorage() {
-        return clientScopes();
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
 
     @Override
     @Deprecated
     public GroupProvider groupLocalStorage() {
-        return groups();
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
 
     @Override
     @Deprecated
     public ClientProvider clientStorageManager() {
-        return clients();
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
 
     @Override
     @Deprecated
     public ClientScopeProvider clientScopeStorageManager() {
-        return clientScopes();
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
 
     @Override
     @Deprecated
     public RoleProvider roleLocalStorage() {
-        return roles();
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
 
     @Override
     @Deprecated
     public RoleProvider roleStorageManager() {
-        return roles();
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
 
     @Override
     @Deprecated
     public GroupProvider groupStorageManager() {
-        return groups();
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
-
-    private final ThreadLocal<Boolean> recursionPreventionUserStorageManager = new ThreadLocal<>();
 
     @Override
     @Deprecated
     public UserProvider userStorageManager() {
-        if(recursionPreventionUserStorageManager.get() != null) {
-            throw new IllegalStateException("userStorageManager() is being called recursively. Please adjust your code according to the Keycloak 19 migration guide.");
-        }
-        try {
-            recursionPreventionUserStorageManager.set(Boolean.TRUE);
-            return users();
-        } finally {
-            recursionPreventionUserStorageManager.remove();
-        }
+        throw new IllegalStateException("Access to the legacy store is no longer possible via this method. Adjust your code according to the Keycloak 19 Upgrading Guide.");
     }
 
     @Override
@@ -462,7 +446,11 @@ public class DefaultKeycloakSession implements KeycloakSession {
         return clientPolicyManager;
     }
 
+    @Override
     public void close() {
+        if (closed) {
+            throw new IllegalStateException("Illegal call to #close() on already closed KeycloakSession");
+        }
         Consumer<? super Provider> safeClose = p -> {
             try {
                 p.close();
@@ -475,6 +463,10 @@ public class DefaultKeycloakSession implements KeycloakSession {
         for (Entry<InvalidableObjectType, Set<Object>> me : invalidationMap.entrySet()) {
             factory.invalidate(this, me.getKey(), me.getValue().toArray());
         }
+        closed = true;
     }
 
+    public boolean isClosed() {
+        return closed;
+    }
 }

@@ -54,8 +54,6 @@ import org.keycloak.models.map.storage.MapStorage;
 import org.keycloak.models.map.storage.ModelCriteriaBuilder.Operator;
 import org.keycloak.models.map.storage.criteria.DefaultModelCriteria;
 import org.keycloak.models.utils.KeycloakModelUtils;
-import org.keycloak.storage.StorageId;
-import org.keycloak.storage.client.ClientStorageProvider;
 
 import java.util.Collection;
 import java.util.EnumMap;
@@ -66,7 +64,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -83,8 +80,9 @@ import static org.keycloak.models.map.common.AbstractMapProviderFactory.MapProvi
 import static org.keycloak.models.map.storage.QueryParameters.Order.ASCENDING;
 import static org.keycloak.models.map.storage.QueryParameters.withCriteria;
 import static org.keycloak.models.map.storage.criteria.DefaultModelCriteria.criteria;
+import static org.keycloak.models.utils.KeycloakModelUtils.isUsernameCaseSensitive;
 
-public class MapUserProvider implements UserProvider.Streams {
+public class MapUserProvider implements UserProvider {
 
     private static final Logger LOG = Logger.getLogger(MapUserProvider.class);
     private final KeycloakSession session;
@@ -333,12 +331,14 @@ public class MapUserProvider implements UserProvider.Streams {
         LOG.tracef("addUser(%s, %s, %s, %s, %s)%s", realm, id, username, addDefaultRoles, addDefaultRequiredActions, getShortStackTrace());
         DefaultModelCriteria<UserModel> mcb = criteria();
         mcb = mcb.compare(SearchableFields.REALM_ID, Operator.EQ, realm.getId())
-          .compare(SearchableFields.USERNAME, Operator.EQ, username);
-
+                 .compare(isUsernameCaseSensitive(realm) ? 
+                         SearchableFields.USERNAME : 
+                         SearchableFields.USERNAME_CASE_INSENSITIVE, Operator.EQ, username);
+        
         if (tx.getCount(withCriteria(mcb)) > 0) {
             throw new ModelDuplicateException("User with username '" + username + "' in realm " + realm.getName() + " already exists" );
         }
-        
+
         if (id != null && tx.read(id) != null) {
             throw new ModelDuplicateException("User exists: " + id);
         }
@@ -347,7 +347,7 @@ public class MapUserProvider implements UserProvider.Streams {
         entity.setId(id);
         entity.setRealmId(realm.getId());
         entity.setEmailConstraint(KeycloakModelUtils.generateId());
-        entity.setUsername(username.toLowerCase());
+        entity.setUsername(username);
         entity.setCreatedTimestamp(Time.currentTimeMillis());
 
         entity = tx.create(entity);
@@ -465,33 +465,6 @@ public class MapUserProvider implements UserProvider.Streams {
 
     @Override
     public void preRemove(RealmModel realm, ComponentModel component) {
-        String componentId = component.getId();
-        LOG.tracef("preRemove[ComponentModel](%s, %s)%s", realm, componentId, getShortStackTrace());
-        if (component.getProviderType().equals(ClientStorageProvider.class.getName())) {
-            DefaultModelCriteria<UserModel> mcb = criteria();
-            mcb = mcb.compare(SearchableFields.REALM_ID, Operator.EQ, realm.getId())
-              .compare(SearchableFields.CONSENT_CLIENT_FEDERATION_LINK, Operator.EQ, componentId);
-
-            try (Stream<MapUserEntity> s = tx.read(withCriteria(mcb))) {
-                String providerIdS = new StorageId(componentId, "").getId();
-                s.forEach(removeConsentsForExternalClient(providerIdS));
-            }
-        }
-    }
-
-    private Consumer<MapUserEntity> removeConsentsForExternalClient(String idPrefix) {
-        return userEntity -> {
-            Set<MapUserConsentEntity> userConsents = userEntity.getUserConsents();
-            if (userConsents == null || userConsents.isEmpty()) return;
-            List<String> consentClientIds = userConsents.stream()
-              .map(MapUserConsentEntity::getClientId)
-              .filter(clientId -> clientId != null && clientId.startsWith(idPrefix))
-              .collect(Collectors.toList());
-
-            if (! consentClientIds.isEmpty()) {
-                consentClientIds.forEach(userEntity::removeUserConsent);
-            }
-        };
     }
 
     @Override
@@ -518,11 +491,19 @@ public class MapUserProvider implements UserProvider.Streams {
         LOG.tracef("getUserByUsername(%s, %s)%s", realm, username, getShortStackTrace());
         DefaultModelCriteria<UserModel> mcb = criteria();
         mcb = mcb.compare(SearchableFields.REALM_ID, Operator.EQ, realm.getId())
-          .compare(SearchableFields.USERNAME, Operator.ILIKE, username);
+                 .compare(isUsernameCaseSensitive(realm) ? 
+                         SearchableFields.USERNAME : 
+                         SearchableFields.USERNAME_CASE_INSENSITIVE, Operator.EQ, username);
 
-        try (Stream<MapUserEntity> s = tx.read(withCriteria(mcb))) {
-            return s.findFirst()
-              .map(entityToAdapterFunc(realm)).orElse(null);
+        // there is orderBy used to always return the same user in case multiple users are returned from the store
+        try (Stream<MapUserEntity> s = tx.read(withCriteria(mcb).orderBy(SearchableFields.USERNAME, ASCENDING))) {
+            List<MapUserEntity> users = s.collect(Collectors.toList());
+            if (users.isEmpty()) return null;
+            if (users.size() != 1) {
+                throw new ModelDuplicateException(String.format("There are colliding usernames for users with usernames and ids: %s", 
+                        users.stream().collect(Collectors.toMap(MapUserEntity::getUsername, MapUserEntity::getId))));
+            }
+            return entityToAdapterFunc(realm).apply(users.get(0));
         }
     }
 
@@ -533,11 +514,9 @@ public class MapUserProvider implements UserProvider.Streams {
         mcb = mcb.compare(SearchableFields.REALM_ID, Operator.EQ, realm.getId())
           .compare(SearchableFields.EMAIL, Operator.EQ, email);
 
-        List<MapUserEntity> usersWithEmail = tx.read(withCriteria(mcb))
-                .filter(userEntity -> Objects.equals(userEntity.getEmail(), email))
-                .collect(Collectors.toList());
+        List<MapUserEntity> usersWithEmail = tx.read(withCriteria(mcb)).collect(Collectors.toList());
+
         if (usersWithEmail.isEmpty()) return null;
-        
         if (usersWithEmail.size() > 1) {
             // Realm settings have been changed from allowing duplicate emails to not allowing them
             // but duplicates haven't been removed.
@@ -545,7 +524,7 @@ public class MapUserProvider implements UserProvider.Streams {
         }
 
         MapUserEntity userEntity = usersWithEmail.get(0);
-        
+
         if (!realm.isDuplicateEmailsAllowed()) {
             if (userEntity.getEmail() != null && !userEntity.getEmail().equals(userEntity.getEmailConstraint())) {
                 // Realm settings have been changed from allowing duplicate emails to not allowing them.
@@ -553,7 +532,7 @@ public class MapUserProvider implements UserProvider.Streams {
                 userEntity.setEmailConstraint(userEntity.getEmail());
             }
         }
-        
+
         return entityToAdapterFunc(realm).apply(userEntity);
     }
 
@@ -571,31 +550,11 @@ public class MapUserProvider implements UserProvider.Streams {
     }
 
     @Override
-    public Stream<UserModel> getUsersStream(RealmModel realm, Integer firstResult, Integer maxResults, boolean includeServiceAccounts) {
-        LOG.tracef("getUsersStream(%s, %d, %d, %s)%s", realm, firstResult, maxResults, includeServiceAccounts, getShortStackTrace());
-        DefaultModelCriteria<UserModel> mcb = criteria();
-        mcb = mcb.compare(SearchableFields.REALM_ID, Operator.EQ, realm.getId());
-
-        if (! includeServiceAccounts) {
-            mcb = mcb.compare(SearchableFields.SERVICE_ACCOUNT_CLIENT, Operator.NOT_EXISTS);
-        }
-
-        return tx.read(withCriteria(mcb).pagination(firstResult, maxResults, SearchableFields.USERNAME))
-                .map(entityToAdapterFunc(realm));
-    }
-
-    @Override
-    public Stream<UserModel> getUsersStream(RealmModel realm, Integer firstResult, Integer maxResults) {
-        LOG.tracef("getUsersStream(%s, %d, %d)%s", realm, firstResult, maxResults, getShortStackTrace());
-        return getUsersStream(realm, firstResult, maxResults, false);
-    }
-
-    @Override
     public Stream<UserModel> searchForUserStream(RealmModel realm, String search, Integer firstResult, Integer maxResults) {
         LOG.tracef("searchForUserStream(%s, %s, %d, %d)%s", realm, search, firstResult, maxResults, getShortStackTrace());
         Map<String, String> attributes = new HashMap<>();
         attributes.put(UserModel.SEARCH, search);
-        session.setAttribute(UserModel.INCLUDE_SERVICE_ACCOUNT, false);
+        attributes.put(UserModel.INCLUDE_SERVICE_ACCOUNT, Boolean.FALSE.toString());
         return searchForUserStream(realm, attributes, firstResult, maxResults);
     }
 
@@ -605,10 +564,6 @@ public class MapUserProvider implements UserProvider.Streams {
 
         final DefaultModelCriteria<UserModel> mcb = criteria();
         DefaultModelCriteria<UserModel> criteria = mcb.compare(SearchableFields.REALM_ID, Operator.EQ, realm.getId());
-
-        if (! session.getAttributeOrDefault(UserModel.INCLUDE_SERVICE_ACCOUNT, true)) {
-            criteria = criteria.compare(SearchableFields.SERVICE_ACCOUNT_CLIENT, Operator.NOT_EXISTS);
-        }
 
         final boolean exactSearch = Boolean.parseBoolean(attributes.getOrDefault(UserModel.EXACT, Boolean.FALSE.toString()));
 
@@ -627,16 +582,18 @@ public class MapUserProvider implements UserProvider.Streams {
                     DefaultModelCriteria<UserModel> searchCriteria = null;
                     for (String stringToSearch : value.split("\\s+")) {
                         if (searchCriteria == null) {
-                            searchCriteria = addSearchToModelCriteria(stringToSearch, mcb);
+                            searchCriteria = addSearchToModelCriteria(realm, stringToSearch, mcb);
                         } else {
-                            searchCriteria = mcb.and(searchCriteria, addSearchToModelCriteria(stringToSearch, mcb));
+                            searchCriteria = mcb.and(searchCriteria, addSearchToModelCriteria(realm, stringToSearch, mcb));
                         }
                     }
 
                     criteria = mcb.and(criteria, searchCriteria);
                     break;
                 case USERNAME:
-                    criteria = criteria.compare(SearchableFields.USERNAME, Operator.ILIKE, searchedString);
+                    criteria = isUsernameCaseSensitive(realm) ?
+                            criteria.compare(SearchableFields.USERNAME, Operator.LIKE, searchedString) : 
+                            criteria.compare(SearchableFields.USERNAME_CASE_INSENSITIVE, Operator.ILIKE, searchedString);
                     break;
                 case FIRST_NAME:
                     criteria = criteria.compare(SearchableFields.FIRST_NAME, Operator.ILIKE, searchedString);
@@ -666,6 +623,13 @@ public class MapUserProvider implements UserProvider.Streams {
                 case UserModel.IDP_USER_ID: {
                     criteria = criteria.compare(SearchableFields.IDP_AND_USER, Operator.EQ, attributes.get(UserModel.IDP_ALIAS),
                             value);
+                    break;
+                }
+                case UserModel.INCLUDE_SERVICE_ACCOUNT: {
+                    if (!attributes.containsKey(UserModel.INCLUDE_SERVICE_ACCOUNT)
+                            || !Boolean.parseBoolean(attributes.get(UserModel.INCLUDE_SERVICE_ACCOUNT))) {
+                        criteria = criteria.compare(SearchableFields.SERVICE_ACCOUNT_CLIENT, Operator.NOT_EXISTS);
+                    }
                     break;
                 }
                 case UserModel.EXACT:
@@ -729,7 +693,7 @@ public class MapUserProvider implements UserProvider.Streams {
 
     @Override
     public UserModel addUser(RealmModel realm, String username) {
-        return addUser(realm, null, username.toLowerCase(), true, true);
+        return addUser(realm, null, username, true, true);
     }
 
     @Override
@@ -794,7 +758,7 @@ public class MapUserProvider implements UserProvider.Streams {
         return r;
     }
 
-    private DefaultModelCriteria<UserModel> addSearchToModelCriteria(String value,
+    private DefaultModelCriteria<UserModel> addSearchToModelCriteria(RealmModel realm, String value,
             DefaultModelCriteria<UserModel> mcb) {
 
         if (value.length() >= 2 && value.charAt(0) == '"' && value.charAt(value.length() - 1) == '"') {
@@ -814,7 +778,9 @@ public class MapUserProvider implements UserProvider.Streams {
         }
 
         return mcb.or(
-                mcb.compare(SearchableFields.USERNAME, Operator.ILIKE, value),
+                isUsernameCaseSensitive(realm) ?
+                        mcb.compare(SearchableFields.USERNAME, Operator.LIKE, value) :
+                        mcb.compare(SearchableFields.USERNAME_CASE_INSENSITIVE, Operator.ILIKE, value),
                 mcb.compare(SearchableFields.EMAIL, Operator.ILIKE, value),
                 mcb.compare(SearchableFields.FIRST_NAME, Operator.ILIKE, value),
                 mcb.compare(SearchableFields.LAST_NAME, Operator.ILIKE, value));
